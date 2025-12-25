@@ -2,6 +2,7 @@ import os
 import struct
 import re
 import zlib
+import json
 from pathlib import Path
 
 def decompress(path: str) -> bytes | None:
@@ -36,6 +37,64 @@ def grabActionData(buffer: bytes):
         blob = buffer[start:end].decode("utf-8", errors="ignore")
         out.append((tmoName, logicName, blob.strip()))
     return out
+
+def grabActDataBlob(text: str, start: int) -> str | None:
+    i = text.find("{", start)
+    if i == -1:
+        return None
+    depth = 0
+    inStr = False
+    esc = False
+    for j in range(i, len(text)):
+        ch = text[j]
+        if inStr:
+            if esc:
+                esc = False
+                continue
+            if ch == "\\":
+                esc = True
+                continue
+            if ch == '"':
+                inStr = False
+            continue
+        else:
+            if ch == '"':
+                inStr = True
+                continue
+            if ch == "{":
+                depth += 1
+            elif ch == "}":
+                depth -= 1
+                if depth == 0:
+                    return text[i:j + 1]
+    return None
+
+def parseActData(buffer: bytes):
+    txt = buffer.decode("utf-8", errors="ignore")
+    out = {"kind": "act_data", "entries": {}}
+    for m in re.finditer(r'\{\s*"kind"\s*:\s*"act_data"\s*,', txt):
+        blob = grabActDataBlob(txt, m.start())
+        if not blob:
+            continue
+        output = blob.replace("\\", "\\\\")
+        output = re.sub(r',(\s*[}\]])', r'\1',output)
+        try:
+            obj = json.loads(output)
+        except Exception:
+            continue
+        if not isinstance(obj, dict) or obj.get("kind") != "act_data":
+            continue
+        for k, v in obj.items():
+            if k == "kind":
+                continue
+            out["entries"][k] = v
+    return out
+
+def writeJSON(buffer: bytes, output_dir: str, tact_name: str):
+    data = parseActData(buffer)
+    outFile = os.path.join(output_dir, f"{tact_name}.json")
+    with open(outFile, "w", encoding="utf-8") as f:
+        json.dump(data, f, indent=4, ensure_ascii=False)
 
 def getAll(hay: bytes, needle: bytes):
     start = 0
@@ -132,8 +191,8 @@ def extract(buffer: bytes, output_dir: str, tact_name: str):
     reportFile = os.path.join(output_dir, "__animreport.txt")
     with open(reportFile, "w", encoding="utf-8") as report:
         report.write("\n".join(reportLines))
+    writeJSON(buffer, output_dir, tact_name)
     print(f"[+] {tact_name}: Wrote {totalWritten} TMO files")
-    print(f"[+] Report: {reportFile}")
 
 def selection():
     try:
